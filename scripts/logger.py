@@ -83,9 +83,11 @@ class ConversionLogger:
         """디버그 로그"""
         self.logger.debug(message)
 
-    def warning(self, message: str, slide_num: Optional[int] = None):
+    def warning(self, message: str, slide_num: Optional[int] = None, exception: Optional[Exception] = None):
         """경고 로그"""
         warning_msg = f"[Slide {slide_num}] {message}" if slide_num else message
+        if exception:
+            warning_msg += f" - {type(exception).__name__}: {str(exception)}"
         self.logger.warning(warning_msg)
         self.stats['warnings'].append(warning_msg)
 

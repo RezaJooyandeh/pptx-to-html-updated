@@ -295,6 +295,24 @@ pixels = (emu / 914400) * dpi
 - `python scripts/convert_pptx_to_html_v2.py "(동아출판)…pptx" test_output` 실행 후 Slide 3 회전 뱃지·텍스트 박스의 좌표가 슬라이드 폭 내로 수렴함을 확인.
 - `_tmp_out5` 디버그 런에서 pivot 메타데이터와 좌표(예: x≈1842px, pivot≈1868px)가 PowerPoint 범위와 일치하는지 수치 점검.
 
+### 7. ✨ 템플릿 요소 병합 (convert_pptx_to_html_v2.py)
+
+**파일**: `scripts/convert_pptx_to_html_v2.py`
+
+#### 개선 내용
+- 슬라이드 렌더링 시 마스터(`slideMasters`)와 레이아웃(`slideLayouts`)의 `spTree`를 순회하여 플레이스홀더가 아닌 템플릿 도형·이미지를 추출.
+- 추출된 템플릿 요소를 슬라이드 고유 요소보다 먼저 렌더링하여 PPT 레이어 순서를 그대로 유지.
+- 템플릿에 포함된 로고, 헤더, 푸터 등이 HTML 출력에 포함되어 디자인 일관성 확보.
+
+#### 핵심 변경
+- `_extract_template_elements` 신규 메서드로 템플릿 XML 파싱 로직 분리.
+- `_process_sp_tree`, `_process_group`에 `skip_placeholders` 옵션을 추가해 템플릿에서 제목/본문 플레이스홀더는 건너뜀.
+- `process_slide`에서 마스터 → 레이아웃 → 슬라이드 순으로 요소를 병합하도록 단계화.
+
+#### 검증
+- `python scripts/convert_pptx_to_html_v2.py "(동아출판)…pptx" output` 실행 후 HTML에서 템플릿 로고와 상단 바가 원본 PPT와 동일하게 렌더링됨을 확인.
+- 템플릿 요소가 포함된 슬라이드에서도 기존 애니메이션/차트 처리에 영향이 없는지 점검.
+
 ---
 
 ## 다음 단계

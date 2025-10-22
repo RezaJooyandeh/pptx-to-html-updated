@@ -387,11 +387,13 @@ class EnhancedPPTXToHTMLV2:
 
         return None
 
-    def _build_placeholder_context(self, zip_ref, slide_rels_path: str) -> Dict[str, Dict]:
+    def _build_placeholder_context(self, zip_ref, slide_rels_path: str,
+                                   layout_path: Optional[str] = None) -> Dict[str, Dict]:
         """슬라이드에 적용되는 레이아웃/마스터 플레이스홀더 맵 구성"""
         context = {'layout': {}, 'master': {}}
 
-        layout_path = self._get_related_slide_layout(zip_ref, slide_rels_path)
+        if layout_path is None:
+            layout_path = self._get_related_slide_layout(zip_ref, slide_rels_path)
         if layout_path:
             if layout_path not in self.layout_placeholder_cache:
                 try:
@@ -1533,6 +1535,36 @@ class EnhancedPPTXToHTMLV2:
 
     # === 도형 처리 (Phase 2 통합) ===
 
+    def _extract_template_elements(self, zip_ref, template_path: str, rels_path: str, idx: int,
+                                   chart_extractor, shape_converter, smartart_parser,
+                                   animation_handler) -> List[Dict]:
+        """레이아웃/마스터 템플릿 요소 추출"""
+        elements: List[Dict] = []
+        try:
+            template_xml = ET.fromstring(zip_ref.read(template_path))
+        except KeyError:
+            return elements
+
+        sp_tree = template_xml.find('.//p:cSld/p:spTree', self.ns)
+        if sp_tree is None:
+            return elements
+
+        self._process_sp_tree(
+            sp_tree,
+            zip_ref,
+            rels_path,
+            idx,
+            {'layout': {}, 'master': {}},
+            chart_extractor,
+            shape_converter,
+            smartart_parser,
+            animation_handler,
+            elements,
+            transform_chain=[],
+            skip_placeholders=True
+        )
+        return elements
+
     def process_shape(self, shape, zip_ref, slide_rels_path, slide_num,
                       shape_converter, animation_handler,
                       placeholder_context: Dict[str, Dict],
@@ -1890,9 +1922,14 @@ class EnhancedPPTXToHTMLV2:
 
     def _process_group(self, grp_sp, zip_ref, slide_rels_path, idx, placeholder_context: Dict[str, Dict],
                        chart_extractor, shape_converter, smartart_parser,
-                       animation_handler, elements: List[Dict], transform_chain: Optional[List[Dict]]):
+                       animation_handler, elements: List[Dict], transform_chain: Optional[List[Dict]],
+                       skip_placeholders: bool = False):
         """그룹 도형 처리"""
         transform_chain = transform_chain or []
+        if skip_placeholders:
+            ph = grp_sp.find('.//p:nvGrpSpPr/p:nvPr/p:ph', self.ns)
+            if ph is not None:
+                return
         group_transform = self._extract_group_transform(grp_sp)
         new_chain = transform_chain + [group_transform]
 
@@ -1900,6 +1937,10 @@ class EnhancedPPTXToHTMLV2:
             tag = self._strip_namespace(child.tag)
             if tag in {'nvGrpSpPr', 'grpSpPr'}:
                 continue
+            if skip_placeholders:
+                ph_elem = child.find('.//p:nvPr/p:ph', self.ns)
+                if ph_elem is not None:
+                    continue
 
             if tag in {'sp', 'cxnSp'}:
                 elements.append(
@@ -1917,11 +1958,12 @@ class EnhancedPPTXToHTMLV2:
             elif tag == 'grpSp':
                 self._process_group(child, zip_ref, slide_rels_path, idx,
                                     placeholder_context, chart_extractor, shape_converter, smartart_parser,
-                                    animation_handler, elements, new_chain)
+                                    animation_handler, elements, new_chain, skip_placeholders=skip_placeholders)
 
     def _process_sp_tree(self, container, zip_ref, slide_rels_path, idx, placeholder_context: Dict[str, Dict],
                          chart_extractor, shape_converter, smartart_parser,
-                         animation_handler, elements: List[Dict], transform_chain: Optional[List[Dict]] = None):
+                         animation_handler, elements: List[Dict], transform_chain: Optional[List[Dict]] = None,
+                         skip_placeholders: bool = False):
         """슬라이드 spTree 재귀 처리"""
         transform_chain = transform_chain or []
 
@@ -1929,6 +1971,10 @@ class EnhancedPPTXToHTMLV2:
             tag = self._strip_namespace(child.tag)
             if tag in {'nvGrpSpPr', 'grpSpPr'}:
                 continue
+            if skip_placeholders:
+                ph_elem = child.find('.//p:nvPr/p:ph', self.ns)
+                if ph_elem is not None:
+                    continue
 
             if tag in {'sp', 'cxnSp'}:
                 elements.append(
@@ -1946,7 +1992,7 @@ class EnhancedPPTXToHTMLV2:
             elif tag == 'grpSp':
                 self._process_group(child, zip_ref, slide_rels_path, idx,
                                     placeholder_context, chart_extractor, shape_converter, smartart_parser,
-                                    animation_handler, elements, transform_chain)
+                                    animation_handler, elements, transform_chain, skip_placeholders=skip_placeholders)
 
     def process_slide(self, zip_ref, slide_id, idx, chart_extractor,
                       shape_converter, smartart_parser, animation_handler):
@@ -1970,19 +2016,53 @@ class EnhancedPPTXToHTMLV2:
 
         slide_xml = ET.fromstring(zip_ref.read(slide_path))
 
+        layout_path = self._get_related_slide_layout(zip_ref, slide_rels_path)
+        master_path = self._get_layout_master_path(zip_ref, layout_path) if layout_path else None
+
         # 배경 추출
         background = self._resolve_background(zip_ref, slide_xml, slide_rels_path)
 
         # Phase 2: 애니메이션 추출
         animations = animation_handler.extract_slide_animations(slide_xml)
 
-        placeholder_context = self._build_placeholder_context(zip_ref, slide_rels_path)
+        placeholder_context = self._build_placeholder_context(zip_ref, slide_rels_path, layout_path=layout_path)
 
         # 모든 요소 처리
         elements = []
 
         # z-index 초기화
         self.z_index_counter = 1
+
+        # 템플릿 요소(마스터 → 레이아웃 순) 추가
+        if master_path:
+            master_rels_path = master_path.replace('slideMasters/', 'slideMasters/_rels/').replace('.xml', '.xml.rels')
+            elements.extend(
+                self._extract_template_elements(
+                    zip_ref,
+                    master_path,
+                    master_rels_path,
+                    idx,
+                    chart_extractor,
+                    shape_converter,
+                    smartart_parser,
+                    animation_handler
+                )
+            )
+
+        if layout_path:
+            layout_rels_path = layout_path.replace('slideLayouts/', 'slideLayouts/_rels/').replace('.xml', '.xml.rels')
+            elements.extend(
+                self._extract_template_elements(
+                    zip_ref,
+                    layout_path,
+                    layout_rels_path,
+                    idx,
+                    chart_extractor,
+                    shape_converter,
+                    smartart_parser,
+                    animation_handler
+                )
+            )
 
         sp_tree = slide_xml.find('.//p:cSld/p:spTree', self.ns)
         if sp_tree is not None:
