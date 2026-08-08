@@ -380,14 +380,16 @@ class ShapeGeometryConverter:
         fill_rule_attr = f' fill-rule="{fill_rule}"' if fill_rule else ''
         image_markup = self._build_clipped_image(image, path_str, view_box) if image else ''
 
+        # 보이지도 않고 그림도 없는 도형은 SVG 자체를 생략
+        if not image_markup and fill_attr == 'none' and not float(stroke_width or 0):
+            return ''
+
         return (
-            f'<svg viewBox="{view_box[0]} {view_box[1]} {view_box[2]} {view_box[3]}" preserveAspectRatio="none" '
-            'xmlns="http://www.w3.org/2000/svg" '
-            'style="position: absolute; inset: 0; display: block; width: 100%; height: 100%; pointer-events: none;">'
+            f'<svg class="ppt-shape" viewBox="{view_box[0]} {view_box[1]} {view_box[2]} {view_box[3]}" '
+            'preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">'
             f'{image_markup}'
             f'<path d="{path_str}" fill="{fill_attr}" stroke="{stroke}" stroke-width="{stroke_width}"'
-            f'{fill_rule_attr} vector-effect="non-scaling-stroke" />'
-            '</svg>'
+            f'{fill_rule_attr} /></svg>'
         )
 
     @staticmethod

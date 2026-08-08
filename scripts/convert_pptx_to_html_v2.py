@@ -16,6 +16,7 @@ Phase 2 Features:
 
 import sys
 import zipfile
+import re
 from pathlib import Path
 import colorsys
 import json
@@ -78,6 +79,7 @@ class EnhancedPPTXToHTMLV2:
         self.theme_colors = self._default_theme_colors()
         self.theme_fonts = self._default_theme_fonts()
         self.theme_line_widths: List[float] = []
+        self.font_stacks: Dict[str, str] = {}
         self.table_styles: Dict[str, ET.Element] = {}
         self.theme_background_fills: List[Dict] = []
         self.layout_background_cache: Dict[str, Optional[Dict]] = {}
@@ -2124,6 +2126,7 @@ class EnhancedPPTXToHTMLV2:
             self.theme_colors = self._default_theme_colors()
             self.theme_fonts = self._default_theme_fonts()
             self.theme_line_widths = []
+            self.font_stacks = {}
             self.table_styles = {}
             self.theme_background_fills = []
             self.layout_background_cache.clear()
@@ -2950,6 +2953,7 @@ class EnhancedPPTXToHTMLV2:
 :root {{
     --slide-width: {slide_width:.2f}px;
     --slide-height: {slide_height:.2f}px;
+{chr(10).join(f'    --font-{slug}: {stack};' for slug, stack in sorted(self.font_stacks.items()))}
 }}
 
 * {{
@@ -3021,6 +3025,33 @@ body {{
 .ppt-element {{
     position: absolute;
     overflow: visible;
+}}
+
+.ppt-shape {{
+    position: absolute;
+    inset: 0;
+    display: block;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+}}
+
+.ppt-shape path {{
+    vector-effect: non-scaling-stroke;
+}}
+
+.ppt-text-block {{
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    overflow: visible;
+}}
+
+.ppt-text-inner {{
+    width: 100%;
+    flex: 0 0 auto;
+    white-space: normal;
 }}
 
 .ppt-link {{
@@ -3249,7 +3280,7 @@ body {{
         <div class="progress-bar" id="progress"></div>
         <div class="stage-wrapper">
             <div class="slide-stage">
-                {''.join(slides_markup)}
+                {(chr(10) + ' ' * 16).join(slides_markup)}
             </div>
         </div>
         <div class="controls">
@@ -3402,29 +3433,24 @@ body {{
             pad_bottom = padding.get('bottom', 0.0)
             pad_left = padding.get('left', 0.0)
 
-            # 줄바꿈 개수를 예측할 수 없으므로 세로 정렬은 브라우저에 맡긴다
-            justify = {'ctr': 'center', 'b': 'flex-end'}.get(anchor, 'flex-start')
+            # 세로 정렬과 안쪽 여백만 도형마다 다르다
+            wrapper_styles = []
+            if anchor in ('ctr', 'b'):
+                wrapper_styles.append(f"justify-content: {'center' if anchor == 'ctr' else 'flex-end'}")
+            if pad_top or pad_right or pad_bottom or pad_left:
+                wrapper_styles.append(
+                    f"padding: {pad_top:.2f}px {pad_right:.2f}px {pad_bottom:.2f}px {pad_left:.2f}px"
+                )
 
-            wrapper_styles = [
-                "position: relative",
-                "display: flex",
-                "flex-direction: column",
-                f"justify-content: {justify}",
-                "height: 100%",
-                f"padding: {pad_top:.2f}px {pad_right:.2f}px {pad_bottom:.2f}px {pad_left:.2f}px",
-                "overflow: visible"
-            ]
-
-            inner_styles = ["width: 100%", "flex: 0 0 auto"]
+            inner_styles = []
             if not wrap_text:
                 inner_styles.extend(["white-space: nowrap", "overflow: visible", "width: fit-content"])
-            else:
-                inner_styles.append("white-space: normal")
 
-            inner_block = (
-                f'<div class="ppt-text-inner" style="{"; ".join(inner_styles)}">{paragraphs_html}</div>'
-            )
-            content.append(f'<div class="ppt-text-block" style="{"; ".join(wrapper_styles)}">{inner_block}</div>')
+            inner_attr = f' style="{"; ".join(inner_styles)}"' if inner_styles else ''
+            wrapper_attr = f' style="{"; ".join(wrapper_styles)}"' if wrapper_styles else ''
+
+            inner_block = f'<div class="ppt-text-inner"{inner_attr}>{paragraphs_html}</div>'
+            content.append(f'<div class="ppt-text-block"{wrapper_attr}>{inner_block}</div>')
 
         shape_html = f'<div class="ppt-element" data-shape-id="{element.get("shape_id", "")}" style="{"; ".join(styles)}">{"".join(content)}</div>'
         if element.get('hyperlink'):
@@ -3606,7 +3632,7 @@ body {{
         return crop
 
     @classmethod
-    def _font_stack(cls, font_family: Optional[str]) -> str:
+    def _build_font_stack(cls, font_family: Optional[str]) -> str:
         """폰트 이름을 CSS 폴백 스택으로 변환"""
         name = (font_family or 'Arial').strip()
         if not name:
@@ -3630,6 +3656,13 @@ body {{
             else f"'{family}'"
             for family in stack
         )
+
+    def _font_stack(self, font_family: Optional[str]) -> str:
+        """폴백 스택은 변환기가 만든 것이므로 변수로 한 번만 정의한다"""
+        name = (font_family or 'Arial').strip() or 'Arial'
+        slug = re.sub(r'[^a-z0-9]+', '-', name.lower()).strip('-') or 'font'
+        self.font_stacks.setdefault(slug, self._build_font_stack(name))
+        return f"var(--font-{slug})"
 
     @staticmethod
     def _escape_html(text):
