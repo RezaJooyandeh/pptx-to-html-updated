@@ -734,6 +734,42 @@ class EnhancedPPTXToHTMLV2:
 
     ARROW_SIZES = {'sm': 2.0, 'med': 3.0, 'lg': 4.0}
 
+    def _diagram_text_transform(self, shape, sp_pr) -> Optional[Dict]:
+        """SmartArt는 dsp:txXfrm 으로 본문을 따로 배치한다 (회전은 도형 기준 상대값)"""
+        tx_xfrm = shape.find('dsp:txXfrm', self.ns)
+        shape_xfrm = sp_pr.find('a:xfrm', self.ns) if sp_pr is not None else None
+        if tx_xfrm is None or shape_xfrm is None:
+            return None
+
+        try:
+            rotation = int(tx_xfrm.get('rot', 0)) / 60000
+        except ValueError:
+            return None
+        if not rotation:
+            return None
+
+        text_ext = tx_xfrm.find('a:ext', self.ns)
+        shape_ext = shape_xfrm.find('a:ext', self.ns)
+        if text_ext is None or shape_ext is None:
+            return None
+
+        try:
+            shape_cx = int(shape_ext.get('cx', 0))
+            shape_cy = int(shape_ext.get('cy', 0))
+            text_cx = int(text_ext.get('cx', 0))
+            text_cy = int(text_ext.get('cy', 0))
+        except ValueError:
+            return None
+        if not shape_cx or not shape_cy:
+            return None
+
+        # 그룹 변환으로 크기가 바뀌어도 따라가도록 비율로 보관한다
+        return {
+            'rotation': rotation,
+            'width_ratio': text_cx / shape_cx,
+            'height_ratio': text_cy / shape_cy,
+        }
+
     def _extract_connector(self, sp_pr) -> Dict:
         """연결선 지오메트리와 화살표 끝 모양 추출"""
         connector = {'preset': 'line', 'adjust': {}, 'head': None, 'tail': None}
@@ -2055,6 +2091,8 @@ class EnhancedPPTXToHTMLV2:
 
         if self._strip_namespace(shape.tag) == 'cxnSp':
             shape_data['connector'] = self._extract_connector(sp_pr)
+
+        shape_data['text_transform'] = self._diagram_text_transform(shape, sp_pr)
 
         # Phase 2: 커스텀 지오메트리 추출
         if sp_pr is not None:
@@ -3441,6 +3479,18 @@ body {{
                 wrapper_styles.append(
                     f"padding: {pad_top:.2f}px {pad_right:.2f}px {pad_bottom:.2f}px {pad_left:.2f}px"
                 )
+            text_transform = element.get('text_transform')
+            if text_transform:
+                text_width = pos.get('width', 0.0) * text_transform['width_ratio']
+                text_height = pos.get('height', 0.0) * text_transform['height_ratio']
+                wrapper_styles.extend([
+                    "position: absolute",
+                    "left: 50%",
+                    "top: 50%",
+                    f"width: {text_width:.2f}px",
+                    f"height: {text_height:.2f}px",
+                    f"transform: translate(-50%, -50%) rotate({text_transform['rotation']:.3f}deg)",
+                ])
 
             inner_styles = []
             if not wrap_text:
